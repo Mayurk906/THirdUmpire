@@ -1,0 +1,60 @@
+# Listing pages the scraper crawls for new documents (PROJECT_PLAN.md Phase 4).
+# IPL is deliberately not listed here: its documents live one hop behind
+# https://www.iplt20.com/documents (a hub of links to per-document pages,
+# e.g. /playing-conditions), so scraper/scrape.py crawls it with dedicated
+# two-stage logic that reuses this same file's `bcci_embedded_json` parser
+# for each sub-page, rather than a single-page entry like the ones below.
+#
+# Fields:
+#   name                 unique identifier, also used for logging
+#   url                  the listing page to fetch
+#   body                 "icc" | "bcci" -- who owns/publishes the documents
+#   parser               scraper/extract.py dispatch key
+#   competition_prefix   combined with the parsed format to build the
+#                        `competition` value, e.g. "icc" + "test" -> "icc_test"
+#   doc_type             assigned to every document found on this page
+#   include_keywords     if non-empty, a title must contain at least one
+#                        (case-insensitive substring match) to be considered
+#   exclude_keywords     a title containing any of these is skipped
+#   js_rendered          true if Playwright is needed to see the links (see
+#                        scraper/scrape.py -- not currently true for any
+#                        entry here; both pages confirmed static on inspection)
+
+- name: icc_playing_conditions
+  url: "https://www.icc-cricket.com/about/cricket/rules-and-regulations/playing-conditions"
+  body: icc
+  parser: icc_html
+  competition_prefix: icc
+  doc_type: playing_conditions
+  # No include filter: format + a parseable date in the title is signal
+  # enough (see scraper/metadata.py parse_format/parse_effective_date).
+  include_keywords: []
+  # Excludes tournament-specific documents (World Cup, Champions Trophy,
+  # WTC cycles, qualifiers) which are separate competitions with their own
+  # rules, not the standing Men's/Women's Test/ODI/T20I playing conditions
+  # this project tracks -- plus addendums/FAQs, which are usually already
+  # filtered out for lacking a parseable date, but are named here too for
+  # robustness against a future retitling.
+  exclude_keywords: ["world cup", "championship", "trophy", "wtc", "qualifier", "addendum", "faq"]
+  js_rendered: false
+
+- name: bcci_domestic_playing_conditions
+  url: "https://www.bcci.tv/playing-condition"
+  body: bcci
+  parser: bcci_embedded_json
+  competition_prefix: bcci_domestic
+  doc_type: playing_conditions
+  # This page also lists BCCI's mirror of the ICC "Standard"/international
+  # playing conditions (e.g. "Men's Standard Test Match Playing Conditions",
+  # "Women's Twenty20 International Playing Conditions") alongside the
+  # actual domestic-tournament documents this project wants (Ranji Trophy /
+  # Vijay Hazare Trophy / Syed Mushtaq Ali Trophy, titled generically by
+  # format rather than by tournament name). The two sets aren't reliably
+  # distinguishable by an exclude-keyword blocklist (one international title
+  # contains neither "Standard" nor "International"), but the domestic set
+  # has a consistent, distinct title shape: "Playing Conditions for
+  # <Gender>'s <Format> Matches" -- so this uses that as a positive filter
+  # instead of trying to exclude every international phrasing.
+  include_keywords: ["playing conditions for"]
+  exclude_keywords: []
+  js_rendered: false

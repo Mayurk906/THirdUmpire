@@ -1,0 +1,147 @@
+- doc_id: mcc_laws_2026
+  title: MCC Laws of Cricket 2017 Code 4th Edition (2026)
+  body: mcc
+  competition: laws
+  doc_type: laws
+  effective_from: '2026-10-01'
+  url: https://www.lords.org/getmedia/a4ef9f77-2a25-4f5b-a286-4601f08e6334/Laws-of-Cricket-2017-Code-4th-Edition-(2026)_5.pdf
+  manual: false
+  status: active
+- doc_id: ipl_2026_pc
+  title: TATA IPL 2026 Match Playing Conditions
+  body: bcci
+  competition: ipl
+  doc_type: playing_conditions
+  effective_from: '2026-03-01'
+  url: https://www.iplt20.com/cms/files/jot2qw8s50z1/7DScv8UxUc6AJcrXDon2yW/bdc93c1c438bfafad464f2a334862d59/1775736835406_TATA_IPL_2026_Match_Playing_Conditions.pdf
+  manual: false
+  status: active
+- doc_id: icc_mens_t20i_2025_07
+  title: ICC Men's T20I Playing Conditions - July 2025
+  body: icc
+  competition: icc_t20i
+  doc_type: playing_conditions
+  effective_from: 2025-07
+  url: null
+  manual: true
+  status: active
+- doc_id: icc_mens_test_2025_06
+  title: ICC Men's Test Match Playing Conditions – June 2025
+  body: icc
+  competition: icc_test
+  gender: men
+  doc_type: playing_conditions
+  effective_from: 2025-06
+  url: https://images.icc-cricket.com/image/upload/prd/lm8owaz03i86m1eneb7m.pdf
+  manual: false
+  status: active
+- doc_id: icc_mens_odi_2025_07
+  title: ICC Men’s Standard ODI Playing Conditions Effective July 2025
+  body: icc
+  competition: icc_odi
+  gender: men
+  doc_type: playing_conditions
+  effective_from: 2025-07
+  url: https://images.icc-cricket.com/image/upload/prd/d25dbgishkx0kijb4jeu.pdf
+  manual: false
+  status: active
+- doc_id: icc_womens_test_2026_07
+  title: ICC Women's Test Match playing Conditions - July 2026
+  body: icc
+  competition: icc_test
+  gender: women
+  doc_type: playing_conditions
+  effective_from: 2026-07
+  url: https://images.icc-cricket.com/image/upload/prd/cectkrcjgimwsacl6bq6.pdf
+  manual: false
+  status: active
+- doc_id: icc_womens_t20i_2026_07
+  title: ICC Women's T20I Playing Conditions - Jul 2026
+  body: icc
+  competition: icc_t20i
+  gender: women
+  doc_type: playing_conditions
+  effective_from: 2026-07
+  url: https://images.icc-cricket.com/image/upload/prd/tu1cpg49bbrurpmoiqig.pdf
+  manual: false
+  status: active
+- doc_id: icc_womens_odi_2026_07
+  title: ICC Women's  ODI PCs - Jul 2026
+  body: icc
+  competition: icc_odi
+  gender: women
+  doc_type: playing_conditions
+  effective_from: 2026-07
+  url: https://images.icc-cricket.com/image/upload/prd/kbcsf9vgjtw2fmcghuvt.pdf
+  manual: false
+  status: active
+- doc_id: bcci_mens_domestic_multiday_2025
+  title: Playing Conditions for Men’s Multi-day Matches
+  body: bcci
+  competition: bcci_domestic_multiday
+  gender: men
+  doc_type: playing_conditions
+  effective_from: '2025'
+  url: https://www.bcci.tv/cms/files/gtykgr9m2ngt/4W7p83Hnj6t5QFyfiEqFQ8/4314cd20c7459f870d71476a7c303b1e/1772193467492_2025-26_BCCI_Men_Multi_Day_PC.pdf
+  manual: false
+  status: active
+- doc_id: bcci_mens_domestic_odi_2025
+  title: Playing Conditions for Men’s One-day Matches
+  body: bcci
+  competition: bcci_domestic_odi
+  gender: men
+  doc_type: playing_conditions
+  effective_from: '2025'
+  url: https://www.bcci.tv/cms/files/gtykgr9m2ngt/wFavPmHTinTXTGRZiyVtI/d6948654f86c2918107a7d07f2fb1ec1/1772193519108_2025-26_BCCI_Men_One_Day_PC.pdf
+  manual: false
+  status: active
+- doc_id: bcci_mens_domestic_t20_2025
+  title: Playing Conditions for Men’s T20 Matches
+  body: bcci
+  competition: bcci_domestic_t20
+  gender: men
+  doc_type: playing_conditions
+  effective_from: '2025'
+  url: https://www.bcci.tv/cms/files/gtykgr9m2ngt/wUFOHtHs6eyBtR75iGoOL/7a971a489d24ffa9cdcaeb1b27018eda/1772193553050_2025-26_BCCI_Men_T20_PC.pdf
+  manual: false
+  status: active
+- doc_id: bcci_womens_domestic_multiday_2025
+  title: Playing Conditions for Women’s Multi-day Matches
+  body: bcci
+  competition: bcci_domestic_multiday
+  gender: women
+  doc_type: playing_conditions
+  effective_from: '2025'
+  url: https://www.bcci.tv/cms/files/gtykgr9m2ngt/7FBPrCpjzGFctnEOPJnHlo/3523fe4fcbd768222bc63d1cd7b4d767/1772193625250_2025-26_BCCI_Women_Multi_Day_PC.pdf
+  manual: false
+  status: active
+- doc_id: bcci_womens_domestic_odi_2025
+  title: Playing Conditions for Women’s One-day Matches
+  body: bcci
+  competition: bcci_domestic_odi
+  gender: women
+  doc_type: playing_conditions
+  effective_from: '2025'
+  url: https://www.bcci.tv/cms/files/gtykgr9m2ngt/64N8tUb4nRSe84aYzDMfql/21328eca1368998786b6913c619d3703/1772193660539_2025-26_BCCI_Women_One_Day_PC.pdf
+  manual: false
+  status: active
+- doc_id: bcci_womens_domestic_t20_2025
+  title: Playing Conditions for Women’s T20 Matches
+  body: bcci
+  competition: bcci_domestic_t20
+  gender: women
+  doc_type: playing_conditions
+  effective_from: '2025'
+  url: https://www.bcci.tv/cms/files/gtykgr9m2ngt/4DNoXMuCs9Qz0DAr6Hcf1S/c020d8779e73cc594e50d7db13c54d3c/1772193696890_2025-26_BCCI_Women_T20_PC.pdf
+  manual: false
+  status: active
+- doc_id: ipl_2026_coc
+  title: TATA IPL 2026 Code of Conduct for Players & Team Officials
+  body: bcci
+  competition: ipl
+  gender: all
+  doc_type: code_of_conduct
+  effective_from: '2026'
+  url: https://www.iplt20.com/cms/files/jot2qw8s50z1/2nc9X6qHuw2v2yaX02oAOx/0ae0b19851cd927ffd27e0e115238d0b/1774244043749_TATA_IPL_2026_Code_of_Conduct_for_Players_and_Team_Officials.pdf
+  manual: false
+  status: active
