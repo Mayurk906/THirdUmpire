@@ -9,10 +9,17 @@ from __future__ import annotations
 
 import streamlit as st
 
-from src.citations import find_matching_chunk
-from src.config import BASE_DIR, MAX_QUESTION_CHARS, RERANKER_FT_PATH
-from src.pipeline import run_query
-from src.schemas import AskResponse
+from scripts.fetch_private_data import fetch_private_data_if_needed
+
+# Must run before any import below touches chroma_db/ -- a no-op on local
+# dev (which already has it) or a deploy with no GH_DATA_* secrets set (see
+# README "Deploying a private demo").
+fetch_private_data_if_needed()
+
+from src.citations import find_matching_chunk  # noqa: E402
+from src.config import BASE_DIR, MAX_QUESTION_CHARS, RERANKER_FT_PATH  # noqa: E402
+from src.pipeline import run_query  # noqa: E402
+from src.schemas import AskResponse  # noqa: E402
 
 st.set_page_config(page_title="ThirdUmpire", page_icon=":material/sports_cricket:", layout="centered")
 

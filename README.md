@@ -173,13 +173,44 @@ Both run live against the Streamlit UI (`dense` + base reranker, auto-detected c
 ## Future work (Phases 8-9, upgrades)
 
 - **Phase 8:** a retrieval-quality gate using the fine-tuned reranker's score, triggering one grounded query rewrite and retry; conversational/multi-turn mode.
-- **Phase 9:** FastAPI backend, rate limiting, and a React frontend. (A local SQLite answer cache and an optional LLM query planner with a Groq backup model already exist -- see Architecture above -- but production auth/multi-tenancy is still open.)
+- **Phase 9:** FastAPI backend, rate limiting, and a React frontend. (A local SQLite answer cache and an optional LLM query planner with a Groq backup model already exist -- see Architecture above -- but production auth/multi-tenancy is still open. The Groq fallback has been verified live end-to-end, including the automatic trigger when Gemini fails; `GROQ_MODEL` defaults to `openai/gpt-oss-120b`, since `llama-3.3-70b-versatile` -- the obvious choice at the time this was written -- had already been retired from Groq's lineup by the time this was tested.)
 - Fine-tune on the full corpus once quota/budget allows, rather than the 600-chunk subset.
 - Expand the corpus further: older MCC editions, WPL, additional ICC formats, and BCCI's "Standard" domestic documents (currently excluded to avoid confusion with the genuinely domestic tournaments).
 - Fix the appendix-parsing gap noted above.
 - `MAX_COMPETITIONS_PER_CLAUSE_TITLE` caps diversity by exact-ish clause_title text; a proper embedding-similarity clustering of near-duplicate clauses (grouping at index time rather than capping at context-selection time) would generalize beyond clauses that happen to share a title string.
 - Quantize the base reranker (ONNX/int8) to cut its ~1.5-2.8s p50/p95 rerank latency -- not attempted this round since it needs a new dependency and an accuracy re-check against the golden set.
 - `QUERY_PLANNER_MODE=llm` hasn't been validated live against the golden set yet (it's new and off by default specifically to avoid spending GEMINI_MODEL's quota by accident) -- worth an `eval/run_eval.py --with-answers` comparison against the regex detector once quota allows.
+
+## Deploying a private demo
+
+Streamlit Community Cloud builds the app straight from this GitHub repo -- but `data/` (the source PDFs) and `chroma_db/` (the indexed rule text) are deliberately **not** in it; see "Documents" above. A public deploy would have to either redistribute that content publicly or sit there unable to answer anything. The setup below keeps the repo exactly as-is and instead has a **private**, invite-only deployment pull the index from a **private** GitHub repo at startup.
+
+**1. Build the data bundle** (one zip of both directories):
+
+```powershell
+Compress-Archive -Path chroma_db, models -DestinationPath thirdumpire-data.zip
+```
+
+**2. Create a second, *private* GitHub repo** (e.g. `thirdumpire-data`) just to hold that zip -- don't add it to this repo. Create a Release in it (any tag, e.g. `v1`) and upload `thirdumpire-data.zip` as that release's asset.
+
+**3. Generate a fine-grained Personal Access Token** (github.com -> Settings -> Developer settings -> Fine-grained tokens) scoped to *only* that private repo, with read-only **Contents** permission. Copy it -- you won't see it again.
+
+**4. Deploy this repo** on [share.streamlit.io](https://share.streamlit.io): New app -> pick this repo/branch -> main file `app.py`.
+
+**5. In the new app's Settings -> Secrets**, paste (TOML format):
+
+```toml
+GOOGLE_API_KEY = "..."
+GEMINI_MODEL = "..."
+GROQ_API_KEY = "..."       # optional, for the Gemini-quota fallback
+GH_DATA_REPO = "yourname/thirdumpire-data"
+GH_DATA_RELEASE_TAG = "v1"
+GH_DATA_TOKEN = "..."      # the token from step 3
+```
+
+**6. In Settings -> Sharing, set the app to private** and add the specific people (e.g. an interviewer) who should be able to open it.
+
+On first load, `scripts/fetch_private_data.py` sees no local `chroma_db/`, downloads the release asset with the token, and extracts it -- the public repo itself never contains the indexed text. Local development is unaffected either way: it already has `chroma_db/` on disk, so the fetch is always a no-op there.
 
 ## Development
 

@@ -129,12 +129,24 @@ QUERY_PLANNER_MODE = os.getenv("QUERY_PLANNER_MODE", "regex")
 QUERY_PLANNER_GEMINI_MODEL = os.getenv("QUERY_PLANNER_GEMINI_MODEL") or None
 TEMPERATURE = float(os.getenv("TEMPERATURE", "0"))
 
+# --- Private data bootstrap (optional, for a hosted/cloud deploy only) ---
+# chroma_db/ and models/reranker-ft/ are gitignored -- the rule documents
+# aren't ours to redistribute publicly (see README "Documents"). A deployed
+# instance that has no local chroma_db/ can fetch one from a PRIVATE GitHub
+# repo's release asset instead (see scripts/fetch_private_data.py and the
+# README's "Deploying a private demo" section). All three must be set for
+# this to do anything; local development never needs them, since it already
+# has chroma_db/ on disk.
+GH_DATA_REPO = os.getenv("GH_DATA_REPO") or None  # "owner/private-data-repo"
+GH_DATA_RELEASE_TAG = os.getenv("GH_DATA_RELEASE_TAG") or None
+GH_DATA_TOKEN = os.getenv("GH_DATA_TOKEN") or None  # fine-grained PAT, read-only Contents
+
 # --- Groq (optional backup answer model) ---
 # Used only if every Gemini attempt in answer.py fails (e.g. the free
 # tier's 20-requests/day cap). Unset GROQ_API_KEY disables the fallback
 # entirely -- the original Gemini error is raised as before, not swallowed.
 GROQ_API_KEY = os.getenv("GROQ_API_KEY") or None
-GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
+GROQ_MODEL = os.getenv("GROQ_MODEL", "openai/gpt-oss-120b")
 
 
 def require_gemini_model() -> str:
