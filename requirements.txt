@@ -19,6 +19,7 @@ langchain-chroma>=0.1
 
 # LLM
 langchain-google-genai>=2.0
+groq>=0.11  # Optional backup answer model when Gemini's free-tier quota is exhausted; see GROQ_API_KEY in .env.example
 
 # Tracing (optional at runtime; the project must run with tracing disabled)
 langsmith>=0.1

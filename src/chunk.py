@@ -84,6 +84,23 @@ CONTROL_CHARS_RE = re.compile(r"[\x00-\x08\x0b-\x1f\xa0]")
 WHITESPACE_RE = re.compile(r"[ \t]+")
 
 
+def _looks_like_clause_title(text: str) -> bool:
+    """True if `text` reads like a real clause heading, not body prose that
+    happens to start with a decimal number.
+
+    CLAUSE_NUMERIC_RE matches the whole line, so a line-wrapped measurement
+    like "5.5 ounces/156 g, nor more than 5.75 ounces/163 g, and shall" (a
+    PDF line break lands right after "not less than") parses as clause "5.5"
+    titled "ounces/156 g, nor more...". Found live: this silently truncated
+    Law 4.1 and 51 other clauses across 3 documents, none of them at a table
+    -- pymupdf's text extraction was already correct; the bug was purely
+    this regex having no sanity check on what it captured as a title. Every
+    real clause/appendix title in the corpus starts with a capital letter
+    (verified against all 6,014 chunks before adding this check).
+    """
+    return bool(text) and (text[0].isupper() or text[0] in "(\"")
+
+
 def normalize_line(line: str) -> str:
     """Strip control-character artifacts and collapse tabs/nbsp to single spaces."""
     cleaned = CONTROL_CHARS_RE.sub(" ", line)
@@ -290,6 +307,18 @@ def parse_clauses(pages: list[dict]) -> list[dict]:
             if numeric_under_appendix:
                 clause_no = f"{last_appendix_letter}-{clause_no}"
             inline_title = (m.group(2) or "").strip()
+            if inline_title and not _looks_like_clause_title(inline_title):
+                # Not a real clause heading -- a decimal-shaped number inside
+                # ordinary prose (see _looks_like_clause_title). Treat the
+                # whole line as a continuation of the current clause instead.
+                if current is not None:
+                    current.lines.append(line)
+                else:
+                    if preamble_page_start is None:
+                        preamble_page_start = page_num
+                    preamble_lines.append(line)
+                i += 1
+                continue
             consumed = 1
             title = inline_title
             if not title and i + 1 < n and stream[i + 1][0] in (page_num, page_num + 1):
@@ -300,7 +329,7 @@ def parse_clauses(pages: list[dict]) -> list[dict]:
                     or SUBCLAUSE_NUMERIC_RE.match(candidate_title)
                     or SUBCLAUSE_APPENDIX_RE.match(candidate_title)
                 )
-                if not looks_like_number and len(candidate_title) <= 80:
+                if not looks_like_number and len(candidate_title) <= 80 and _looks_like_clause_title(candidate_title):
                     title = candidate_title
                     consumed = 2
             _flush(current, stream[i - 1][0] if i > 0 else page_num, records)

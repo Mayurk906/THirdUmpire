@@ -29,8 +29,29 @@ CONTEXT_K = int(os.getenv("CONTEXT_K", "5"))
 # For comparison questions: extra candidates fetched per compared competition
 # that the main retrieval pass returned none of.
 COMPARISON_TOPUP_K = int(os.getenv("COMPARISON_TOPUP_K", "3"))
+# Cap on how many DIFFERENT competitions' chunks sharing the same
+# clause_title can occupy the final context (e.g. "Minimum Over Rates"
+# exists almost verbatim in ~15 competition x gender combinations; without
+# this cap, the top CONTEXT_K can fill entirely with near-duplicates of one
+# clause and crowd out everything else). Doesn't limit multiple chunks of
+# the SAME competition's document -- those are sequential pieces of one long
+# clause, not duplicates, and must all stay together.
+MAX_COMPETITIONS_PER_CLAUSE_TITLE = int(os.getenv("MAX_COMPETITIONS_PER_CLAUSE_TITLE", "2"))
 MAX_CHUNK_CHARS = int(os.getenv("MAX_CHUNK_CHARS", "1500"))
 CHUNK_OVERLAP = int(os.getenv("CHUNK_OVERLAP", "150"))
+
+# --- Reranking score blend ---
+# Weight given to the cross-encoder's sigmoid score when combined with the
+# first-stage retrieval rank; (1 - this) goes to the rank. Pure
+# reranker-score ordering (alpha=1.0) regressed Recall@1 from 0.814 to 0.651
+# on the golden set (see README "Known issues") -- the cross-encoder
+# sometimes outranks the true best match by a hair, which costs nothing at
+# k=5 but loses Recall@1 outright. Blending back in a little of the
+# first-stage signal (which dense scored 0.814 at @1 on its own) recovers
+# that without giving up the reranker's much larger Recall@5 gain. Blending
+# by RANK rather than raw score, since dense (cosine ~0.7-0.9) and hybrid
+# (RRF, ~0.01-0.03) scores aren't on comparable scales.
+RERANK_BLEND_ALPHA = float(os.getenv("RERANK_BLEND_ALPHA", "0.85"))
 
 # --- Hybrid search (Phase 5) ---
 RRF_K = int(os.getenv("RRF_K", "60"))
@@ -76,6 +97,13 @@ RERANKER_FT_MAX_LENGTH = int(os.getenv("RERANKER_FT_MAX_LENGTH", "512"))
 MAX_QUESTION_CHARS = int(os.getenv("MAX_QUESTION_CHARS", "500"))
 PROMPT_VERSION = os.getenv("PROMPT_VERSION", "v3")
 
+# --- Answer cache ---
+# Skips re-calling Gemini for a question already answered under the same
+# context + prompt version + index version (see src/answer_cache.py). On by
+# default since GEMINI_MODEL's free tier is capped at 20 requests/day --
+# tests and scripts that must hit the model every time can set this false.
+ANSWER_CACHE_ENABLED = os.getenv("ANSWER_CACHE_ENABLED", "true").strip().lower() == "true"
+
 # --- Gemini ---
 # No silent default: callers must go through require_gemini_model() so a
 # missing value fails with a clear message at the point of use, not on import.
@@ -84,7 +112,29 @@ GEMINI_MODEL = os.getenv("GEMINI_MODEL")
 # generation doesn't share GEMINI_MODEL's daily free-tier quota (tracked
 # per-model) with production answering. Falls back to GEMINI_MODEL if unset.
 SYNTHETIC_GEMINI_MODEL = os.getenv("SYNTHETIC_GEMINI_MODEL") or None
+# Optional LLM-based query planner (src/query_planner.py), an alternative to
+# query_analyzer.py's regex detector -- handles phrasings the regex can't
+# (e.g. a bare "Test" with no other format named, or "women's" as a real
+# filter, which the regex never uses). Off by default: build_query_plan()
+# is called on every question in the CLI, the app, and every test, and
+# wiring in a network call there by default would (a) silently spend
+# GEMINI_MODEL's 20-request/day free-tier quota on planning instead of
+# answering, and (b) make the whole offline test suite depend on network
+# access and a live API key. Opt in with QUERY_PLANNER_MODE=llm once you've
+# set QUERY_PLANNER_GEMINI_MODEL (falls back to SYNTHETIC_GEMINI_MODEL's
+# quota, then GEMINI_MODEL's, same fallback chain as the synthetic
+# generator) -- it always falls back to the regex detector on any error,
+# including a 429 from an exhausted quota.
+QUERY_PLANNER_MODE = os.getenv("QUERY_PLANNER_MODE", "regex")
+QUERY_PLANNER_GEMINI_MODEL = os.getenv("QUERY_PLANNER_GEMINI_MODEL") or None
 TEMPERATURE = float(os.getenv("TEMPERATURE", "0"))
+
+# --- Groq (optional backup answer model) ---
+# Used only if every Gemini attempt in answer.py fails (e.g. the free
+# tier's 20-requests/day cap). Unset GROQ_API_KEY disables the fallback
+# entirely -- the original Gemini error is raised as before, not swallowed.
+GROQ_API_KEY = os.getenv("GROQ_API_KEY") or None
+GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
 
 
 def require_gemini_model() -> str:
@@ -102,6 +152,12 @@ def require_synthetic_gemini_model() -> str:
     """Return SYNTHETIC_GEMINI_MODEL, falling back to GEMINI_MODEL (and its
     same not-set error) when no separate model is configured."""
     return SYNTHETIC_GEMINI_MODEL or require_gemini_model()
+
+
+def require_query_planner_gemini_model() -> str:
+    """Return QUERY_PLANNER_GEMINI_MODEL, falling back to
+    SYNTHETIC_GEMINI_MODEL then GEMINI_MODEL when unset."""
+    return QUERY_PLANNER_GEMINI_MODEL or SYNTHETIC_GEMINI_MODEL or require_gemini_model()
 
 
 # --- Chroma ---

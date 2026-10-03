@@ -1,12 +1,13 @@
 """Prompt + Gemini + structured output, with citation and prompt-injection guardrails."""
 from __future__ import annotations
 
+import json
 import logging
 import time
 from functools import lru_cache
 from typing import Any
 
-from src.config import MAX_QUESTION_CHARS, TEMPERATURE, require_gemini_model
+from src.config import GROQ_API_KEY, GROQ_MODEL, MAX_QUESTION_CHARS, TEMPERATURE, require_gemini_model
 from src.schemas import Answer, Chunk
 
 logger = logging.getLogger(__name__)
@@ -72,6 +73,47 @@ def get_llm():
     return ChatGoogleGenerativeAI(model=require_gemini_model(), temperature=TEMPERATURE)
 
 
+_GROQ_JSON_INSTRUCTIONS = """
+
+Respond with ONLY a JSON object (no markdown fences, no extra text) with \
+exactly these keys:
+{"answer": "<your answer text>", "found": true or false, "applies_to": \
+one of "laws"/"ipl"/"icc_t20i"/"icc_test"/"icc_odi"/"bcci_domestic_multiday"/\
+"bcci_domestic_odi"/"bcci_domestic_t20"/"unknown", "citations": \
+[{"doc_id": "...", "clause": "...", "page": <integer>}, ...]}
+"""
+
+
+@lru_cache(maxsize=1)
+def _get_groq_client():
+    from groq import Groq
+
+    return Groq(api_key=GROQ_API_KEY)
+
+
+def _generate_answer_groq(question: str, context_chunks: list[Chunk]) -> Answer:
+    """Backup path, tried only after every Gemini attempt in generate_answer()
+    has failed (see GROQ_API_KEY in config.py; unset disables this entirely).
+    Groq's JSON mode guarantees syntactically valid JSON, not schema
+    compliance the way Gemini's with_structured_output does, so the exact
+    shape is spelled out in the prompt and validated with
+    Answer.model_validate -- a mismatch is handled the same as Gemini
+    producing invalid structured output."""
+    context_text = _format_context(context_chunks, _doc_titles())
+    user_message = f"<context>\n{context_text}\n</context>\n\n<question>\n{question}\n</question>"
+    response = _get_groq_client().chat.completions.create(
+        model=GROQ_MODEL,
+        temperature=TEMPERATURE,
+        response_format={"type": "json_object"},
+        messages=[
+            {"role": "system", "content": SYSTEM_PROMPT + _GROQ_JSON_INSTRUCTIONS},
+            {"role": "user", "content": user_message},
+        ],
+    )
+    data = json.loads(response.choices[0].message.content)
+    return Answer.model_validate(data)
+
+
 def _doc_titles() -> dict[str, str]:
     from src.chunk import load_sources
 
@@ -110,15 +152,22 @@ def generate_answer(question: str, context_chunks: list[Chunk], llm: Any = None)
         try:
             result = _invoke_with_backoff(structured_llm, messages)
             return result if isinstance(result, Answer) else Answer.model_validate(result)
-        except Exception:
+        except Exception as exc:
             if attempt == 0:
-                logger.warning("Model produced invalid structured output, retrying once.")
+                logger.warning("Gemini call failed or produced invalid output (%s), retrying once.", exc)
                 continue
-            logger.error("Model produced invalid structured output twice; returning a clean error.")
-            return Answer(
-                answer="The model produced invalid output; please try rephrasing your question.",
-                found=False,
-                applies_to="unknown",
-                citations=[],
-            )
-    raise RuntimeError("unreachable")  # pragma: no cover
+            logger.error("Gemini failed twice (%s).", exc)
+
+    if GROQ_API_KEY:
+        try:
+            logger.warning("Falling back to Groq (%s) after Gemini failed twice.", GROQ_MODEL)
+            return _generate_answer_groq(question, context_chunks)
+        except Exception:
+            logger.error("Groq fallback also failed; returning a clean error.", exc_info=True)
+
+    return Answer(
+        answer="The model produced invalid output; please try rephrasing your question.",
+        found=False,
+        applies_to="unknown",
+        citations=[],
+    )

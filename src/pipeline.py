@@ -9,8 +9,20 @@ import re
 import time
 
 from src.answer import QuestionTooLongError, generate_answer
+from src.answer_cache import cache_key
+from src.answer_cache import get as cache_get
+from src.answer_cache import put as cache_put
 from src.citations import validate_citations
-from src.config import COMPARISON_TOPUP_K, CONTEXT_K, DEFAULT_FIRST_STAGE, MAX_QUESTION_CHARS, RETRIEVE_K
+from src.config import (
+    ANSWER_CACHE_ENABLED,
+    COMPARISON_TOPUP_K,
+    CONTEXT_K,
+    DEFAULT_FIRST_STAGE,
+    MAX_COMPETITIONS_PER_CLAUSE_TITLE,
+    MAX_QUESTION_CHARS,
+    QUERY_PLANNER_MODE,
+    RETRIEVE_K,
+)
 from src.query_analyzer import build_query_plan
 from src.rerank import rerank
 from src.retrieve import retrieve
@@ -37,39 +49,92 @@ def top_up_compared(plan: QueryPlan, retrieved: list[ScoredChunk], first_stage: 
     return retrieved + extra
 
 
+def _title_key(clause_title: str) -> str:
+    """Case-insensitive grouping key for a clause_title. Found live: ICC
+    men's T20I/ODI documents title this clause "Minimum over rates" while
+    every other competition and the Laws use "Minimum Over Rates" -- a
+    case-sensitive key would silently treat those as two different clauses
+    and let the cap double its effective limit on exactly the content it's
+    meant to cap."""
+    return clause_title.strip().lower()
+
+
+def _fill_diverse(
+    reranked: list[ScoredChunk],
+    k: int,
+    chosen: list[int],
+    max_per_clause_title: int,
+) -> list[int]:
+    """Fills `chosen` up to k in rank order, capping how many DIFFERENT
+    (competition, gender) pairs can share a clause_title -- the corpus has
+    ~15 near-identical copies of some clauses (one per competition x
+    gender), and without this cap the top CONTEXT_K can fill entirely with
+    duplicates of one clause and crowd out everything else. Multiple chunks
+    of the SAME (competition, gender) under one clause_title are never
+    capped, since those are sequential pieces of one long clause, not
+    duplicates. A candidate skipped only for crowding is deferred and used
+    to fill any slots a stricter diverse pass couldn't (e.g. a question with
+    only one real clause worth 5 chunks' answer)."""
+    variants: dict[str, set[tuple[str, str]]] = {}
+    for i in chosen:
+        chunk = reranked[i].chunk
+        variants.setdefault(_title_key(chunk.clause_title), set()).add((chunk.competition, chunk.gender))
+
+    chosen_set = set(chosen)
+    deferred: list[int] = []
+    for i, sc in enumerate(reranked):
+        if len(chosen) >= k:
+            break
+        if i in chosen_set:
+            continue
+        variant = (sc.chunk.competition, sc.chunk.gender)
+        seen = variants.setdefault(_title_key(sc.chunk.clause_title), set())
+        if variant not in seen and len(seen) >= max_per_clause_title:
+            deferred.append(i)
+            continue
+        seen.add(variant)
+        chosen.append(i)
+        chosen_set.add(i)
+
+    for i in deferred:
+        if len(chosen) >= k:
+            break
+        chosen.append(i)
+
+    return chosen
+
+
 def select_context(
     reranked: list[ScoredChunk],
     k: int,
     compared_competitions: list[str] | None = None,
     question: str = "",
+    gender: str | None = None,
 ) -> list[Chunk]:
-    """Top-k by rerank score, except that for a comparison question the
-    best-ranked chunk of each compared competition is guaranteed a slot.
-    Those guaranteed picks prefer the gender the question asks about
-    (women's only if it says so, otherwise men's/all, matching the usual
-    reading of an unqualified "Test" or "ODI")."""
-    if not compared_competitions:
-        return [sc.chunk for sc in reranked[:k]]
-
-    wants_women = bool(_WOMEN_RE.search(question))
-
-    def gender_ok(chunk: Chunk) -> bool:
-        return (chunk.gender == "women") == wants_women
-
+    """The final k chunks sent to the model: diversity-capped by clause_title
+    x (competition, gender) -- see _fill_diverse -- with the best-ranked
+    chunk of each compared competition guaranteed a slot first for
+    comparison questions. Guaranteed picks prefer the gender the question
+    asks about: `gender` if the query planner determined one (see
+    QueryPlan.gender), else regex-matched from the question text. Either
+    way, women's only if asked, otherwise men's/all, matching the usual
+    reading of an unqualified "Test" or "ODI"."""
     chosen: list[int] = []
-    for competition in compared_competitions:
-        candidates = [i for i, sc in enumerate(reranked) if sc.chunk.competition == competition]
-        preferred = [i for i in candidates if gender_ok(reranked[i].chunk)]
-        pick = (preferred or candidates or [None])[0]
-        if pick is not None and pick not in chosen:
-            chosen.append(pick)
-    chosen = sorted(chosen)[:k]
+    if compared_competitions:
+        wants_women = gender == "women" if gender else bool(_WOMEN_RE.search(question))
 
-    for i in range(len(reranked)):
-        if len(chosen) >= k:
-            break
-        if i not in chosen:
-            chosen.append(i)
+        def gender_ok(chunk: Chunk) -> bool:
+            return (chunk.gender == "women") == wants_women
+
+        for competition in compared_competitions:
+            candidates = [i for i, sc in enumerate(reranked) if sc.chunk.competition == competition]
+            preferred = [i for i in candidates if gender_ok(reranked[i].chunk)]
+            pick = (preferred or candidates or [None])[0]
+            if pick is not None and pick not in chosen:
+                chosen.append(pick)
+        chosen = chosen[:k]
+
+    chosen = _fill_diverse(reranked, k, chosen, MAX_COMPETITIONS_PER_CLAUSE_TITLE)
     return [reranked[i].chunk for i in sorted(chosen)]
 
 
@@ -80,7 +145,12 @@ def run_query(
     reranker: str = "base",
     debug: bool = False,
 ) -> AskResponse:
-    plan = build_query_plan(question, competition)
+    if QUERY_PLANNER_MODE == "llm":
+        from src.query_planner import build_query_plan_llm
+
+        plan = build_query_plan_llm(question, competition)
+    else:
+        plan = build_query_plan(question, competition)
 
     if len(question) > MAX_QUESTION_CHARS:
         answer = Answer(
@@ -99,11 +169,20 @@ def run_query(
     reranked = rerank(question, retrieved, reranker=reranker)
     t2 = time.perf_counter()
 
-    context_chunks = select_context(reranked, CONTEXT_K, plan.compared_competitions, question)
-    try:
-        answer = generate_answer(question, context_chunks)
-    except QuestionTooLongError as exc:
-        answer = Answer(answer=str(exc), found=False, applies_to="unknown", citations=[])
+    context_chunks = select_context(reranked, CONTEXT_K, plan.compared_competitions, question, plan.gender)
+
+    key = cache_key(question, context_chunks) if ANSWER_CACHE_ENABLED else None
+    cached_answer = cache_get(key) if key else None
+    answer_cached = cached_answer is not None
+    if cached_answer is not None:
+        answer = cached_answer
+    else:
+        try:
+            answer = generate_answer(question, context_chunks)
+            if key:
+                cache_put(key, answer)
+        except QuestionTooLongError as exc:
+            answer = Answer(answer=str(exc), found=False, applies_to="unknown", citations=[])
     t3 = time.perf_counter()
 
     citation_valid, invalid_citations = validate_citations(answer, context_chunks)
@@ -119,4 +198,5 @@ def run_query(
         context_chunks=context_chunks,
         retrieved=retrieved if debug else None,
         reranked=reranked if debug else None,
+        answer_cached=answer_cached,
     )

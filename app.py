@@ -16,6 +16,32 @@ from src.schemas import AskResponse
 
 st.set_page_config(page_title="ThirdUmpire", page_icon=":material/sports_cricket:", layout="centered")
 
+
+@st.cache_resource(show_spinner="Loading models...")
+def _warm_up() -> None:
+    """Loads the embedder, Chroma collection, and base reranker once per
+    server process, at app startup rather than on the first question.
+
+    Each of these is already lru_cache(maxsize=1)'d in its own module (see
+    retrieve.py / rerank.py), so this doesn't change correctness -- it only
+    moves ~14s of first-query latency (observed live, see README) to app
+    startup, where a spinner is expected, instead of a user's first
+    question, where it looks like something's broken. st.cache_resource (not
+    lru_cache) because Streamlit may re-execute this module on every rerun;
+    this guarantees the loads happen exactly once per process regardless.
+    """
+    from src.rerank import _get_cross_encoder
+    from src.retrieve import _get_collection, _get_embedder
+
+    _get_embedder()
+    _get_collection()
+    _get_cross_encoder("base")
+    if (BASE_DIR / RERANKER_FT_PATH).exists():
+        _get_cross_encoder("ft")
+
+
+_warm_up()
+
 # (competition code, display label) -- None is the "let the query analyzer
 # auto-detect it" option exposed in the CLI as no --competition flag.
 _COMPETITION_OPTIONS: list[tuple[str | None, str]] = [
@@ -121,6 +147,8 @@ if response is not None:
         st.badge(applies_to_display, color=_APPLIES_TO_COLORS.get(response.answer.applies_to, "gray"))
         if not response.citation_valid:
             st.badge("Citation not fully validated", color="red", icon=":material/warning:")
+        if response.answer_cached:
+            st.badge("Cached", color="gray", icon=":material/bolt:")
 
     st.markdown(response.answer.answer)
 

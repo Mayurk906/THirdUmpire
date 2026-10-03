@@ -25,21 +25,25 @@ flowchart TD
     end
 
     subgraph "Query (run_query, the one entry point)"
-        Q[Question] --> QA["query_analyzer.py<br/>competition detection"]
+        Q[Question] --> QA["query_analyzer.py (default)<br/>regex competition/compared-format detection"]
+        QA -.->|QUERY_PLANNER_MODE=llm, off by default| QP["query_planner.py<br/>LLM plan, falls back to regex on any error"]
         QA --> RET{retrieve.py}
         RET -->|dense, default| DENSE[Embedding similarity]
         RET -->|hybrid| HYBRID["BM25 + dense<br/>via Reciprocal Rank Fusion"]
         CHROMA -.-> DENSE
         CHROMA -.-> HYBRID
-        DENSE --> RR["rerank.py<br/>base or fine-tuned cross-encoder"]
+        DENSE --> RR["rerank.py<br/>base or fine-tuned cross-encoder,<br/>blended with first-stage rank"]
         HYBRID --> RR
-        RR --> ANS["answer.py<br/>Gemini + structured output"]
+        RR --> SEL["pipeline.select_context()<br/>comparison guarantee + diversity cap"]
+        SEL --> CACHE{"answer_cache.py<br/>seen this context+question before?"}
+        CACHE -->|hit| RESP
+        CACHE -->|miss| ANS["answer.py<br/>Gemini + structured output,<br/>Groq backup if every Gemini attempt fails"]
         ANS --> CITE["citations.py<br/>validate every claim against context"]
         CITE --> RESP[AskResponse]
     end
 
     RESP --> CLI[ask.py CLI]
-    RESP --> UI["app.py Streamlit UI"]
+    RESP --> UI["app.py Streamlit UI<br/>(warms up models at startup)"]
 ```
 
 ```mermaid
@@ -58,8 +62,11 @@ python -m venv .venv
 .venv\Scripts\Activate.ps1
 pip install -r requirements.txt
 copy .env.example .env
-# fill in GOOGLE_API_KEY and GEMINI_MODEL; optionally SYNTHETIC_GEMINI_MODEL
-# (a separate, lighter model for train/gen_synthetic.py -- see "Known issues" below)
+# fill in GOOGLE_API_KEY and GEMINI_MODEL; everything else in .env.example is
+# optional (see its comments): SYNTHETIC_GEMINI_MODEL for train/gen_synthetic.py,
+# QUERY_PLANNER_MODE/QUERY_PLANNER_GEMINI_MODEL for the LLM query planner
+# (off by default), GROQ_API_KEY/GROQ_MODEL for a backup answer model if
+# Gemini's free-tier quota is exhausted (console.groq.com for a free key)
 ```
 
 ```powershell
@@ -113,15 +120,17 @@ All numbers below are from a single `python -m eval.run_eval` run against `eval/
 
 | config | Recall@1 | Recall@5 | Recall@20 | MRR@10 | retrieve p50/p95 (s) | rerank p50/p95 (s) |
 |---|---|---|---|---|---|---|
-| dense (`DEFAULT_FIRST_STAGE`) | 0.814 | 0.884 | 0.977 | 0.854 | 0.074 / 0.105 | n/a |
-| dense+base_rerank | 0.674 | 0.953 | 0.977 | 0.814 | 0.070 / 0.094 | 1.887 / 2.383 |
-| hybrid (dense + BM25 via RRF) | 0.767 | 0.907 | 0.953 | 0.830 | 0.103 / 0.133 | n/a |
-| hybrid+base_rerank | 0.651 | 0.930 | 0.953 | 0.790 | 0.105 / 0.158 | 1.562 / 2.015 |
-| dense+ft_rerank | 0.651 | **0.977** | 0.977 | 0.804 | 0.060 / 0.093 | 1.636 / 2.148 |
+| dense (`DEFAULT_FIRST_STAGE`) | 0.837 | 0.884 | 0.953 | 0.861 | 0.054 / 0.071 | n/a |
+| dense+base_rerank | 0.860 | 0.930 | 0.953 | 0.880 | 0.055 / 0.072 | 1.483 / 1.912 |
+| hybrid (dense + BM25 via RRF) | 0.814 | 0.907 | 0.953 | 0.858 | 0.092 / 0.154 | n/a |
+| hybrid+base_rerank | 0.837 | 0.907 | 0.953 | 0.872 | 0.110 / 0.163 | 1.611 / 2.099 |
+| dense+ft_rerank | 0.767 | **0.953** | 0.953 | 0.845 | 0.072 / 0.137 | 1.812 / 2.756 |
 
-Full results: `eval/results/20261002T051352Z.json` and its paired `_failures.csv`.
+Full results: `eval/results/20261003T124639Z.json` and its paired `_failures.csv`. (Small overall shifts from the previous run are expected and not a regression -- a chunking bug fix changed ~74 chunks' boundaries corpus-wide, moving 1-2 questions' worth of recall on a 43-question set; see "Known issues" below.)
 
 **First-stage decision (Phase 5):** `dense`, not `hybrid`. Dense wins on both Recall@20 (the reranker's input quality) and latency. The entire gap is the `conduct` question type (IPL Code of Conduct articles): BM25 actively hurts there, since neighbouring articles share near-identical boilerplate wording ("Note: Article N.N covers...") that lexically outscores the correct one. Hybrid search is fully built and available via `--first-stage hybrid` for anyone who wants it; it just isn't the default.
+
+**Reranker score blending (`RERANK_BLEND_ALPHA`).** Pure rerank-score ordering cost Recall@1 outright (0.814 → 0.674 for the base reranker, 0.651 for the fine-tuned one) even though it helped Recall@5 -- the cross-encoder sometimes outranks the true best match by a hair, which costs nothing when 5 chunks reach the model but loses Recall@1 completely. `rerank()` now blends the cross-encoder's sigmoid score with the first-stage *rank* (not raw score -- dense cosine similarity and hybrid RRF scores aren't on comparable scales) at `alpha=0.85`. Result: Recall@1 recovered to *above* the original pre-reranker baseline for both rerankers (base: 0.674 → 0.860; fine-tuned: 0.651 → 0.767) while Recall@5 held essentially flat (0.953/0.977 → 0.930/0.953, within the ~1-question noise from the chunking fix above).
 
 **Reranker fine-tuning (Phase 6):** base model `cross-encoder/ms-marco-MiniLM-L-6-v2`, trained in Colab on synthetic (query, passage, label) pairs generated from a representative 600-chunk subset of the corpus (full provenance in `train/data/dataset_info.json`: 1,238 synthetic questions, 21 dropped for leakage against the golden set, 1,086/131 train/val questions, 5,430/655 rows).
 
@@ -151,23 +160,26 @@ Both run live against the Streamlit UI (`dense` + base reranker, auto-detected c
 
 ## Known issues and limitations
 
-- **Comparison questions get coverage-aware context (fixed; only for the ICC/IPL formats).** Found via live use: "How does the minimum over rate differ between Test, ODI and T20I cricket?" came back "not found". Two causes: (1) `query_analyzer.py` used to restrict retrieval to whichever competition keyword it checked first, dropping the others; (2) even unfiltered, `CONTEXT_K=5` plus ~15 near-identical "Minimum Over Rates" chunks (one per competition x gender) meant the top 5 were all T20I/ODI variants and the Test chunk (reranked ~#12) never reached the model. Now `QueryPlan.compared_competitions` lists every format a question compares (a bare "Test" counts when another format is named next to it), `pipeline.top_up_compared()` fetches candidates for any compared format the main pass missed, and `pipeline.select_context()` guarantees each compared format its best-ranked chunk (men's/all unless the question says women's) before filling the rest by score. The question above now answers Test 15, ODI 14.28 (men) / 15.79 (women), T20I 14.11 / 16 overs per hour, with all citations valid. Limits: only the generic ICC/IPL format keywords trigger this (a domestic-trophy name still wins and filters to that one competition), and a comparison across more than `CONTEXT_K` formats can't fit every one. On the golden set's 4 comparison questions (g034-g037), both gold documents reached the 5-chunk context in 3 of 8 dense/hybrid runs before the fix and 8 of 8 after. The retrieval metrics above don't show this: `eval/run_eval.py` scores the ranked list directly and doesn't go through `select_context()`.
+- **Comparison questions get coverage-aware context (fixed).** Found via live use: "How does the minimum over rate differ between Test, ODI and T20I cricket?" came back "not found". Two causes: (1) `query_analyzer.py` used to restrict retrieval to whichever competition keyword it checked first, dropping the others; (2) even unfiltered, `CONTEXT_K=5` plus ~15 near-identical "Minimum Over Rates" chunks (one per competition x gender) meant the top 5 were all T20I/ODI variants and the Test chunk (reranked ~#12) never reached the model. `QueryPlan.compared_competitions` now lists every format a question compares (a bare "Test" counts when another format is named next to it), `pipeline.top_up_compared()` fetches candidates for any compared format the main pass missed, and `pipeline.select_context()` guarantees each compared format its best-ranked chunk (men's/all unless the question says women's) before filling the rest. That filling is itself diversity-capped (`pipeline._fill_diverse()`, `MAX_COMPETITIONS_PER_CLAUSE_TITLE`): at most 2 different (competition, gender) pairs can share a clause_title in the final context, win or lose, so the same crowding bug can't resurface even on a question the comparison detector misses entirely -- multiple chunks of the *same* competition/gender are never capped, since those are sequential pieces of one long clause, not duplicates. The cap groups clause titles case-insensitively, since ICC's men's T20I/ODI documents title this clause "Minimum over rates" while every other competition uses "Minimum Over Rates" -- found live, and would otherwise have let the cap's effective limit silently double on exactly the content it's meant to cap. The question above now answers Test 15, ODI 14.28, T20I 14.11 overs/hour, all citations valid. Limits: only the generic ICC/IPL format keywords trigger the explicit comparison-guarantee path (a domestic-trophy name still wins and filters to that one competition), and a comparison across more than `CONTEXT_K` formats can't fit every one. On the golden set's 4 comparison questions (g034-g037), both gold documents reached the 5-chunk context in 3 of 8 dense/hybrid runs before the fix and 8 of 8 after. The retrieval metrics above don't show this: `eval/run_eval.py` scores the ranked list directly and doesn't go through `select_context()`.
+- **A clause-boundary regex bug truncated 52 chunks across 3 documents (fixed) -- diagnosed here as a PDF table-extraction problem, which turned out to be wrong.** Originally found as "Law 4.1 (ball weight and size) is truncated mid-sentence"; the original guess was that its values sat in a PDF table that didn't extract as plain text. Re-investigated while adding a table-aware PDF parser to fix exactly that -- but `pymupdf`'s plain-text extraction was already complete; the actual bug was in `chunk.py`'s clause-heading regex. It matches a whole line shaped like `digits.digits ...` as a new clause, with no check on whether the text after it reads like a real heading. A PDF line break lands right after "shall weigh not less than", so the next line, "5.5 ounces/156 g, nor more than 5.75 ounces/163 g, and shall", parses as clause "5.5" titled "ounces/156 g, nor more...", silently ending Law 4.1's chunk there -- and the same pattern hit 51 other clauses across `mcc_laws_2026` and two ICC documents, none of them at a table. `chunk._looks_like_clause_title()` now rejects a match whose title text doesn't start with a capital letter (verified safe against all 6,014 existing chunks before deploying); the corpus was re-parsed and re-indexed, and 0 chunks now have a suspicious title. **A table-aware parser (pdfplumber) was not added** -- it would not have fixed this, since the text was never garbled by table extraction in the first place.
 - **IPL Code of Conduct "Article N.N" lookups are the weakest category** across every config tested (see Evaluation results above) -- neighbouring articles share near-identical generic wording.
 - **The fine-tuned reranker was trained on a 600-chunk subset, not the full ~6,000-chunk corpus.** Generating synthetic questions for the full corpus hit Gemini's free-tier daily quota (20 requests/day for the main model); `SYNTHETIC_GEMINI_MODEL` lets `train/gen_synthetic.py` use a separate, lighter model for this specifically, without affecting production answer quality.
-- **At least one Law's full text didn't survive PDF extraction**: Law 4.1 (ball weight and size) is truncated mid-sentence in the parsed text, because the source PDF's values were in a table that didn't extract as plain text. A question about exact ball weight will get an incomplete or "not found" answer, not a wrong one -- citation validation still holds -- but it's a real parsing gap.
 - **Some appendix-level content wasn't recognized as its own section** by the Phase 1 chunking regexes (e.g. the T20I Super Over appendix folds into the document's preamble chunk instead of its own clause), making it harder to retrieve precisely.
 - **Corpus coverage is intentionally partial.** BCCI's "Standard" (ICC-mirrored) domestic documents, older MCC editions, WPL, and non-India boards' domestic competitions (Big Bash, CPL, SA20, The Hundred, ...) are out of scope for this build; questions about them correctly return "not found", not a hallucinated answer from an adjacent document.
 - **No conversational/multi-turn support** -- every question is independent (Phase 8).
-- **No production hardening** -- no caching, rate limiting, or auth; runs as a local CLI/Streamlit app only (Phase 9).
+- **No production hardening** -- no rate limiting or auth; runs as a local CLI/Streamlit app only (Phase 9). There is now a local answer cache (see Architecture below), which covers repeat-question load but not auth, multi-tenancy, or abuse protection.
 - **CPU-only in this environment.** Embedding and reranking run locally on CPU; the fine-tuned reranker was trained on a free Colab T4 GPU (~15-30 min), not locally.
 
 ## Future work (Phases 8-9, upgrades)
 
 - **Phase 8:** a retrieval-quality gate using the fine-tuned reranker's score, triggering one grounded query rewrite and retry; conversational/multi-turn mode.
-- **Phase 9:** FastAPI backend, a SQLite answer cache keyed on `INDEX_VERSION`, rate limiting, and a React frontend.
+- **Phase 9:** FastAPI backend, rate limiting, and a React frontend. (A local SQLite answer cache and an optional LLM query planner with a Groq backup model already exist -- see Architecture above -- but production auth/multi-tenancy is still open.)
 - Fine-tune on the full corpus once quota/budget allows, rather than the 600-chunk subset.
 - Expand the corpus further: older MCC editions, WPL, additional ICC formats, and BCCI's "Standard" domestic documents (currently excluded to avoid confusion with the genuinely domestic tournaments).
-- Fix the PDF-table and appendix-parsing gaps noted above.
+- Fix the appendix-parsing gap noted above.
+- `MAX_COMPETITIONS_PER_CLAUSE_TITLE` caps diversity by exact-ish clause_title text; a proper embedding-similarity clustering of near-duplicate clauses (grouping at index time rather than capping at context-selection time) would generalize beyond clauses that happen to share a title string.
+- Quantize the base reranker (ONNX/int8) to cut its ~1.5-2.8s p50/p95 rerank latency -- not attempted this round since it needs a new dependency and an accuracy re-check against the golden set.
+- `QUERY_PLANNER_MODE=llm` hasn't been validated live against the golden set yet (it's new and off by default specifically to avoid spending GEMINI_MODEL's quota by accident) -- worth an `eval/run_eval.py --with-answers` comparison against the regex detector once quota allows.
 
 ## Development
 

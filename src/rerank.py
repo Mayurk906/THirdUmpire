@@ -9,7 +9,7 @@ from __future__ import annotations
 import math
 from functools import lru_cache
 
-from src.config import RERANKER_FT_PATH, RERANKER_MODEL
+from src.config import RERANK_BLEND_ALPHA, RERANKER_FT_PATH, RERANKER_MODEL
 from src.schemas import ScoredChunk
 
 
@@ -35,7 +35,12 @@ def _sigmoid(x: float) -> float:
     return 1.0 / (1.0 + math.exp(-x))
 
 
-def rerank(query: str, candidates: list[ScoredChunk], reranker: str = "base") -> list[ScoredChunk]:
+def rerank(
+    query: str,
+    candidates: list[ScoredChunk],
+    reranker: str = "base",
+    blend_alpha: float = RERANK_BLEND_ALPHA,
+) -> list[ScoredChunk]:
     if not candidates:
         return []
 
@@ -43,9 +48,16 @@ def rerank(query: str, candidates: list[ScoredChunk], reranker: str = "base") ->
     pairs = [(query, c.chunk.text) for c in candidates]
     raw_scores = model.predict(pairs)
 
-    scored = [
-        ScoredChunk(chunk=c.chunk, score=_sigmoid(float(s)), raw_score=float(s))
-        for c, s in zip(candidates, raw_scores)
-    ]
+    # `candidates` arrives pre-sorted by the first stage, so its index IS
+    # that stage's rank -- turned into a 0..1 score comparable across first
+    # stages (dense cosine similarity and hybrid RRF are on very different
+    # raw scales; rank position isn't).
+    n = len(candidates)
+    scored = []
+    for rank, (c, s) in enumerate(zip(candidates, raw_scores)):
+        rerank_score = _sigmoid(float(s))
+        first_stage_rank_score = 1.0 - (rank / n) if n > 1 else 1.0
+        blended = blend_alpha * rerank_score + (1 - blend_alpha) * first_stage_rank_score
+        scored.append(ScoredChunk(chunk=c.chunk, score=blended, raw_score=float(s)))
     scored.sort(key=lambda c: c.score, reverse=True)
     return scored

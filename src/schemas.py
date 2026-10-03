@@ -53,6 +53,12 @@ class QueryPlan(BaseModel):
     # Set when the question compares two or more competitions; the pipeline
     # guarantees each one at least one slot in the answer's context.
     compared_competitions: list[str] | None = None
+    # "men" | "women" | None (unspecified -- select_context() falls back to
+    # regex-matching the question text). Only ever set by the optional LLM
+    # query planner (src/query_planner.py); the regex detector in
+    # query_analyzer.py never sets this, since it has no gender signal of
+    # its own beyond what select_context's regex already catches.
+    gender: str | None = None
 
 
 class ScoredChunk(BaseModel):
@@ -103,3 +109,6 @@ class AskResponse(BaseModel):
     context_chunks: list[Chunk] = Field(default_factory=list)
     retrieved: list[ScoredChunk] | None = None
     reranked: list[ScoredChunk] | None = None
+    # True if this answer came from the local disk cache (src/answer_cache.py)
+    # instead of calling Gemini -- lets a UI show it didn't spend a request.
+    answer_cached: bool = False

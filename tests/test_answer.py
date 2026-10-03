@@ -1,6 +1,7 @@
 import pytest
 from pydantic import ValidationError
 
+from src import answer as answer_module
 from src.answer import QuestionTooLongError, _format_context, generate_answer
 from src.config import MAX_QUESTION_CHARS
 from src.schemas import Answer, Chunk
@@ -97,3 +98,75 @@ def test_format_context_falls_back_to_doc_id_when_title_unknown() -> None:
     chunk = _make_chunk("unknown_doc", "1.1", 1)
     context = _format_context([chunk], {})
     assert "doc_id=unknown_doc" in context
+
+
+class _FailingStructuredLLM:
+    def invoke(self, messages):
+        # Deliberately no "429"/"500"/etc substring -- a retryable-looking
+        # message would trigger _invoke_with_backoff's real sleep-and-retry
+        # loop and make these tests slow for no reason; this is testing the
+        # outer fallback-to-Groq path, not the backoff logic itself.
+        raise RuntimeError("model produced malformed output")
+
+
+class _FailingLLM:
+    def with_structured_output(self, schema):
+        return _FailingStructuredLLM()
+
+
+def test_groq_fallback_used_when_gemini_fails_and_key_is_set(monkeypatch) -> None:
+    monkeypatch.setattr(answer_module, "GROQ_API_KEY", "fake-key")
+    groq_answer = Answer(answer="From Groq.", found=True, applies_to="laws", citations=[])
+    monkeypatch.setattr(answer_module, "_generate_answer_groq", lambda question, chunks: groq_answer)
+
+    result = generate_answer("Some question", [], llm=_FailingLLM())
+
+    assert result == groq_answer
+
+
+def test_no_groq_fallback_when_key_unset(monkeypatch) -> None:
+    monkeypatch.setattr(answer_module, "GROQ_API_KEY", None)
+
+    def _boom(question, chunks):
+        raise AssertionError("Groq must not be called when GROQ_API_KEY is unset")
+
+    monkeypatch.setattr(answer_module, "_generate_answer_groq", _boom)
+
+    result = generate_answer("Some question", [], llm=_FailingLLM())
+
+    assert result.found is False
+    assert "invalid output" in result.answer
+
+
+def test_groq_fallback_failure_returns_clean_error(monkeypatch) -> None:
+    monkeypatch.setattr(answer_module, "GROQ_API_KEY", "fake-key")
+    monkeypatch.setattr(
+        answer_module,
+        "_generate_answer_groq",
+        lambda question, chunks: (_ for _ in ()).throw(RuntimeError("Groq is also down")),
+    )
+
+    result = generate_answer("Some question", [], llm=_FailingLLM())
+
+    assert result.found is False
+
+
+class _FakeGroqClient:
+    """Mimics groq.Groq just enough for _generate_answer_groq's happy path."""
+
+    def __init__(self, content: str):
+        message = type("Msg", (), {"content": content})()
+        choice = type("Choice", (), {"message": message})()
+        response = type("Response", (), {"choices": [choice]})()
+        self.chat = type("Chat", (), {"completions": type("Completions", (), {"create": lambda self, **kw: response})()})()
+
+
+def test_generate_answer_groq_parses_json_response(monkeypatch) -> None:
+    content = '{"answer": "Eleven players.", "found": true, "applies_to": "laws", "citations": []}'
+    monkeypatch.setattr(answer_module, "_get_groq_client", lambda: _FakeGroqClient(content))
+
+    result = answer_module._generate_answer_groq("How many players?", [])
+
+    assert result.answer == "Eleven players."
+    assert result.found is True
+    assert result.applies_to == "laws"
