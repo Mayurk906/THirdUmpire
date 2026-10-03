@@ -39,7 +39,14 @@ def _asset_download_url() -> str | None:
     url = f"{_API_BASE}/repos/{GH_DATA_REPO}/releases/tags/{GH_DATA_RELEASE_TAG}"
     headers = {"Authorization": f"Bearer {GH_DATA_TOKEN}", "Accept": "application/vnd.github+json"}
     response = requests.get(url, headers=headers, timeout=30)
-    response.raise_for_status()
+    if not response.ok:
+        # GitHub's own error body (e.g. {"message": "Not Found", ...}) has no
+        # secrets in it -- surfacing it beats requests' generic HTTPError,
+        # which Streamlit Cloud redacts from the user-facing page anyway.
+        raise RuntimeError(
+            f"GitHub API returned {response.status_code} for {url} "
+            f"(repo={GH_DATA_REPO!r}, tag={GH_DATA_RELEASE_TAG!r}): {response.text[:500]}"
+        )
     assets = response.json().get("assets", [])
     if not assets:
         raise RuntimeError(f"Release {GH_DATA_RELEASE_TAG!r} in {GH_DATA_REPO!r} has no assets.")
@@ -52,6 +59,9 @@ def fetch_private_data_if_needed() -> None:
     if not (GH_DATA_REPO and GH_DATA_RELEASE_TAG and GH_DATA_TOKEN):
         logger.info("No GH_DATA_* secrets set and no local chroma_db/ -- nothing to fetch, nothing to query.")
         return
+    if "/" not in GH_DATA_REPO or GH_DATA_REPO.startswith("http"):
+        # A common mistake: pasting the repo's URL instead of "owner/repo".
+        raise RuntimeError(f"GH_DATA_REPO must be 'owner/repo', not a URL -- got {GH_DATA_REPO!r}.")
 
     import requests
 
@@ -59,7 +69,8 @@ def fetch_private_data_if_needed() -> None:
     asset_url = _asset_download_url()
     headers = {"Authorization": f"Bearer {GH_DATA_TOKEN}", "Accept": "application/octet-stream"}
     response = requests.get(asset_url, headers=headers, timeout=300)
-    response.raise_for_status()
+    if not response.ok:
+        raise RuntimeError(f"GitHub API returned {response.status_code} downloading the release asset: {response.text[:500]}")
 
     with zipfile.ZipFile(io.BytesIO(response.content)) as zf:
         zf.extractall(BASE_DIR)

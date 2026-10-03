@@ -7,12 +7,12 @@ from scripts import fetch_private_data as fpd
 
 
 class _FakeResponse:
-    def __init__(self, json_data=None, content=b""):
+    def __init__(self, json_data=None, content=b"", status_code=200, text=""):
         self._json_data = json_data
         self.content = content
-
-    def raise_for_status(self):
-        pass
+        self.status_code = status_code
+        self.text = text
+        self.ok = status_code < 400
 
     def json(self):
         return self._json_data
@@ -42,6 +42,46 @@ def test_noop_when_secrets_unset(monkeypatch, tmp_path):
 
     monkeypatch.setattr("requests.get", _boom, raising=False)
     fpd.fetch_private_data_if_needed()  # must return quietly, not raise
+
+
+def test_repo_url_instead_of_owner_slash_repo_raises_clear_error(monkeypatch, tmp_path):
+    missing_dir = tmp_path / "chroma_db"
+    monkeypatch.setattr(fpd, "_CHROMA_DIR", missing_dir)
+    monkeypatch.setattr(fpd, "GH_DATA_REPO", "https://github.com/owner/repo")
+    monkeypatch.setattr(fpd, "GH_DATA_RELEASE_TAG", "v1")
+    monkeypatch.setattr(fpd, "GH_DATA_TOKEN", "fake-token")
+
+    def _boom(*args, **kwargs):
+        raise AssertionError("must not make a network call with a malformed GH_DATA_REPO")
+
+    monkeypatch.setattr("requests.get", _boom, raising=False)
+
+    try:
+        fpd.fetch_private_data_if_needed()
+        assert False, "expected a RuntimeError"
+    except RuntimeError as exc:
+        assert "owner/repo" in str(exc)
+
+
+def test_github_error_response_surfaces_status_and_body(monkeypatch, tmp_path):
+    missing_dir = tmp_path / "chroma_db"
+    monkeypatch.setattr(fpd, "_CHROMA_DIR", missing_dir)
+    monkeypatch.setattr(fpd, "GH_DATA_REPO", "owner/private-data-repo")
+    monkeypatch.setattr(fpd, "GH_DATA_RELEASE_TAG", "v1")
+    monkeypatch.setattr(fpd, "GH_DATA_TOKEN", "fake-token")
+
+    monkeypatch.setattr(
+        "requests.get",
+        lambda *a, **kw: _FakeResponse(status_code=404, text='{"message": "Not Found"}'),
+        raising=False,
+    )
+
+    try:
+        fpd.fetch_private_data_if_needed()
+        assert False, "expected a RuntimeError"
+    except RuntimeError as exc:
+        assert "404" in str(exc)
+        assert "Not Found" in str(exc)
 
 
 def test_downloads_and_extracts_when_missing_and_configured(monkeypatch, tmp_path):
